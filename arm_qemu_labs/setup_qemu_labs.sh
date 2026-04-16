@@ -12,6 +12,9 @@ LABS_ROOT="${HOME}/arm_qemu_labs"
 IMAGES_DIR="${LABS_ROOT}/images"
 FIRMWARE_DIR="${LABS_ROOT}/firmware"
 SHARED_DIR="${LABS_ROOT}/shared"
+VENV_DIR="${LABS_ROOT}/.venv"
+KERNEL_NAME="arm-qemu-labs"
+KERNEL_DISPLAY="ARM QEMU Labs (venv)"
 
 UBUNTU_IMAGE_URL="https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
 UBUNTU_IMG_NAME="ubuntu-24.04-arm64.qcow2"
@@ -63,36 +66,56 @@ install_brew_deps() {
     fi
 }
 
-# ── Python dependencies ───────────────────────────────────────────────────────
+# ── Python dependencies (isolated venv) ───────────────────────────────────────
+# Why a venv instead of `pip install --break-system-packages`:
+#   Homebrew can promote a new default `python3` (e.g. 3.14) at any brew upgrade,
+#   which hides packages installed under the previous default (e.g. 3.12) and
+#   breaks the notebook kernel. A project-scoped venv pins the interpreter and
+#   insulates the labs from host-level Python churn.
 install_python_deps() {
-    info "Installing Python dependencies …"
+    info "Creating isolated Python venv at ${VENV_DIR} …"
 
-    if ! command -v python3 &>/dev/null; then
-        error "python3 not found. Install Python 3.12 arm64."
-    fi
+    # Prefer an explicit 3.12 interpreter; fall back to whatever `python3` is.
+    local py_bin=""
+    for candidate in \
+        "/opt/homebrew/bin/python3.12" \
+        "/opt/homebrew/opt/python@3.12/bin/python3.12" \
+        "$(command -v python3.12 2>/dev/null || true)" \
+        "$(command -v python3 2>/dev/null || true)"; do
+        if [[ -n "${candidate}" && -x "${candidate}" ]]; then
+            py_bin="${candidate}"
+            break
+        fi
+    done
+    [[ -z "${py_bin}" ]] && error "No python3 interpreter found. Install python@3.12: brew install python@3.12"
 
-    local python_ver
-    python_ver=$(python3 --version 2>&1)
-    info "  Python: ${python_ver}"
+    local py_ver
+    py_ver=$("${py_bin}" --version 2>&1)
+    info "  Base Python : ${py_bin} (${py_ver})"
 
-    # Install pexpect (required for serial_console.py)
-    if python3 -c "import pexpect" &>/dev/null 2>&1; then
-        info "  ✓ pexpect already installed"
+    if [[ -d "${VENV_DIR}" ]]; then
+        info "  ✓ venv already exists"
     else
-        info "  Installing pexpect …"
-        pip3 install --break-system-packages pexpect || \
-        pip3 install pexpect
+        "${py_bin}" -m venv "${VENV_DIR}"
+        info "  ✓ venv created"
     fi
 
-    # Install jupyter
-    if python3 -c "import jupyter" &>/dev/null 2>&1 || \
-       command -v jupyter &>/dev/null; then
-        info "  ✓ jupyter available"
-    else
-        info "  Installing jupyter …"
-        pip3 install --break-system-packages jupyter || \
-        pip3 install jupyter
-    fi
+    local venv_py="${VENV_DIR}/bin/python"
+    info "Installing pinned packages into venv …"
+    "${venv_py}" -m pip install --quiet --upgrade pip
+    "${venv_py}" -m pip install --quiet \
+        "pexpect>=4.9.0,<5.0" \
+        "jupyterlab>=4.1.0,<5.0" \
+        "ipykernel" \
+        "pytest>=7.4.0,<9.0"
+
+    info "Registering Jupyter kernel '${KERNEL_NAME}' …"
+    "${venv_py}" -m ipykernel install --user \
+        --name "${KERNEL_NAME}" \
+        --display-name "${KERNEL_DISPLAY}" >/dev/null
+
+    info "  ✓ pexpect, jupyterlab, ipykernel, pytest installed"
+    info "  ✓ Kernel '${KERNEL_DISPLAY}' registered"
 }
 
 # ── Directory structure ───────────────────────────────────────────────────────
@@ -283,18 +306,30 @@ smoke_test() {
         warn "  Disk image not found at ${IMAGES_DIR}/${UBUNTU_IMG_NAME}"
     fi
 
-    # pexpect
-    if python3 -c "import pexpect; print(f'pexpect {pexpect.__version__}')" 2>/dev/null; then
-        info "  ✓ pexpect available"
+    # venv + pexpect inside it
+    if [[ -x "${VENV_DIR}/bin/python" ]] && \
+       "${VENV_DIR}/bin/python" -c "import pexpect, jupyterlab" 2>/dev/null; then
+        info "  ✓ venv healthy (pexpect + jupyterlab importable)"
     else
-        warn "  pexpect not installed — run: pip3 install pexpect"
+        warn "  venv missing or incomplete — re-run this script"
     fi
 
     info ""
     info "Setup complete."
-    info "Next: run test_shared_modules.py, then open notebooks/ in Jupyter."
     info ""
+    info "Activate the venv for every lab session:"
+    info "  source ${VENV_DIR}/bin/activate"
+    info ""
+    info "Then run:"
+    info "  python test_shared_modules.py      # verify shared modules (37 tests)"
     info "  jupyter lab ${LABS_ROOT}/notebooks/"
+    info ""
+    info "In Jupyter, select the '${KERNEL_DISPLAY}' kernel."
+    info ""
+    info "Optional — one-shot shell alias (activate + cd):"
+    info "  echo \"alias armlab='source ${VENV_DIR}/bin/activate && cd \$(pwd)'\" >> ~/.zshrc"
+    info "  source ~/.zshrc"
+    info "Then every new shell: type 'armlab'."
 }
 
 # ── Entry point ───────────────────────────────────────────────────────────────

@@ -12,6 +12,10 @@ __pycache__/
 # Private docs — internal planning and strategy, not for public repo
 archives/
 ARM_QEMU_Lab_Notebook_Series_Plan_2.pdf
+ARM_vs_x86_Efficiency_LinkedIn_Draft.md
+
+# Research corpus — editorial pipeline, not for public repo
+Research/
 
 # QEMU runtime artifacts (user-generated, large binaries)
 arm_qemu_labs/images/

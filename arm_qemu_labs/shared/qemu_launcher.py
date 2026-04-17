@@ -73,31 +73,57 @@ class QEMULauncher:
         cpu: str = "cortex-a76",
         ram: str = "2G",
         smp: int = 1,
-        firmware: str = None,
+        firmware_code: str = None,
+        firmware_vars: str = None,
         disk_image: str = None,
         seed_iso: str = None,
+        network: bool = True,
         extra_args: list = None,
         log_file: str = None,
     ):
         """
         Parameters
         ----------
-        machine     : QEMU -machine type (default: virt)
-        cpu         : QEMU -cpu model (default: cortex-a76)
-        ram         : RAM size string (default: 2G)
-        smp         : vCPU count (default: 1)
-        firmware    : Path to QEMU_EFI.fd or other BIOS/UEFI image
-        disk_image  : Path to guest disk (qcow2)
-        seed_iso    : Path to cloud-init seed ISO (meta-data + user-data)
-        extra_args  : Additional raw QEMU CLI arguments
-        log_file    : Path for QEMU stdout/stderr log; auto-generated if None
+        machine       : QEMU -machine type (default: virt)
+        cpu           : QEMU -cpu model (default: cortex-a76)
+        ram           : RAM size string (default: 2G)
+        smp           : vCPU count (default: 1)
+        firmware_code : Path to read-only UEFI code (edk2-aarch64-code.fd)
+        firmware_vars : Path to writable UEFI varstore (varstore.fd)
+        disk_image    : Path to guest disk (qcow2)
+        seed_iso      : Path to cloud-init seed ISO (meta-data + user-data)
+        network       : Attach user-mode virtio-net (needed for cloud-init apt)
+        extra_args    : Additional raw QEMU CLI arguments
+        log_file      : Path for QEMU stdout/stderr log; auto-generated if None
         """
+        # Path sanity: catch "file is present but truncated/wrong" at
+        # construction time, not after a 180-second boot timeout. The
+        # 1 MB floor on firmware rejects the efi-virtio.rom (160 KB)
+        # mislabel that historically got copied in as QEMU_EFI.fd.
+        def _assert_path(path, label, min_bytes=0):
+            if path is None:
+                return
+            if not os.path.isfile(path):
+                raise FileNotFoundError(f"{label}: {path} is not a file")
+            size = os.path.getsize(path)
+            if size < min_bytes:
+                raise ValueError(
+                    f"{label}: {path} is {size} bytes, expected >= {min_bytes}"
+                )
+
+        _assert_path(firmware_code, "firmware_code", min_bytes=1_000_000)
+        _assert_path(firmware_vars, "firmware_vars", min_bytes=1_000_000)
+        _assert_path(disk_image,    "disk_image")
+        _assert_path(seed_iso,      "seed_iso")
+
         self.machine = machine
         self.ram = ram
         self.smp = smp
-        self.firmware = firmware
+        self.firmware_code = firmware_code
+        self.firmware_vars = firmware_vars
         self.disk_image = disk_image
         self.seed_iso = seed_iso
+        self.network = network
         self.extra_args = extra_args or []
         if log_file:
             self.log_file = log_file
@@ -214,8 +240,19 @@ class QEMULauncher:
             # QMP control socket
             "-qmp", f"tcp::{self.qmp_port},server,nowait",
         ]
-        if self.firmware:
-            cmd += ["-bios", str(self.firmware)]
+        # UEFI firmware: modern split-flash layout (readonly code + writable
+        # varstore). The old -bios QEMU_EFI.fd path is gone — on QEMU 9.x +
+        # HVF + Apple Silicon it silently produced zero serial output.
+        if self.firmware_code:
+            cmd += [
+                "-drive",
+                f"if=pflash,format=raw,unit=0,file={self.firmware_code},readonly=on",
+            ]
+        if self.firmware_vars:
+            cmd += [
+                "-drive",
+                f"if=pflash,format=raw,unit=1,file={self.firmware_vars}",
+            ]
         if self.disk_image:
             cmd += [
                 "-drive",
@@ -225,6 +262,13 @@ class QEMULauncher:
             cmd += [
                 "-drive",
                 f"file={self.seed_iso},if=virtio,format=raw,media=cdrom,readonly=on",
+            ]
+        # User-mode virtio-net so cloud-init can apt-get the lab packages
+        # (pciutils, dtc, acpica-tools). Without this, first-boot hangs.
+        if self.network:
+            cmd += [
+                "-netdev", "user,id=net0",
+                "-device", "virtio-net-device,netdev=net0",
             ]
         cmd += self.extra_args
         return cmd

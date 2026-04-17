@@ -34,18 +34,43 @@ arm_qemu_labs/shared/
   assert_lib.py       Test assertions — assert_true, assert_equal, assert_contains, assert_qmp_ok
 ```
 
-## Tests
+## Test Architecture
+
+Four tiers, increasing cost, decreasing frequency.
+
+| Tier | File | Cost | What it proves | Gate |
+|---|---|---|---|---|
+| 1 — Unit + mocks | `test_shared_modules.py` | ~5 s | Python logic: ports, JSON parsing, CPU coercion, pflash/netdev arg building | None (always runs) |
+| 2 — Component integration | *(planned)* | ~30 s | Real `qemu-system-aarch64` spawn, QMP handshake, serial relay | `qemu-system-aarch64` in PATH |
+| 3 — End-to-end boot | `test_boot_integration.py` | ~90 s | Full VM boot, cloud-init, login prompt over serial, clean teardown | `~/arm_qemu_labs/{firmware,images}` staged |
+| 4 — Notebook execution | *(planned)* | ~3 min/chapter | Full notebook run via `nbclient`; assertion cells gate regressions | Chapter-specific |
+
+### Running tests
 
 ```bash
-cd arm_qemu_labs && python3 test_shared_modules.py
+# Tier 1 — unit tests
+source ~/arm_qemu_labs/.venv/bin/activate
+python arm_qemu_labs/test_shared_modules.py             # expect 39/39 PASS
+
+# Tier 3 — full VM boot (skips if firmware/images aren't staged)
+python arm_qemu_labs/test_boot_integration.py           # ~90 s, expects "PASS"
+
+# Bonus: raw shell boot smoke test (bypasses launcher)
+bash arm_qemu_labs/test_boot_pflash.sh                  # interactive, Ctrl+A X to exit
 ```
 
-37 tests across 4 modules + 1 cross-module integration test:
-- `assert_lib`: 14 tests (assertion methods, summary, reset)
-- `qemu_launcher`: 8 tests (port allocation, accelerator detection, lifecycle)
+### Tier 1 coverage today
+
+39 tests across 4 modules + 1 cross-module check:
+- `assert_lib`: 15 tests (assertion methods, summary, reset, exception containment)
+- `qemu_launcher`: 10 tests (port allocation, accelerator detection, HVF coercion, pflash+netdev command building, lifecycle)
 - `qmp_client`: 7 tests (connect, JSON I/O, error handling, fragmented data)
 - `serial_console`: 6 tests (instantiation, connect, grep output)
 - `cross-module`: 1 test (port collision detection)
+
+### Tier 3 coverage today
+
+One chapter (Ch. 1). Every future chapter should copy the harness and swap the assertions — this is the test that would have caught the April 2026 firmware-detection incident (`efi-virtio.rom` mislabeled as `QEMU_EFI.fd`, missing `-netdev`, HVF `-cpu` restriction).
 
 ## Setup
 
@@ -110,6 +135,14 @@ pip freeze | grep <package> >> requirements.txt
 
 **Q: First boot takes ~2 minutes — is that normal?**
 Yes. First boot runs cloud-init, which installs `pciutils`, `xxd`, `device-tree-compiler`, and `acpica-tools` into the guest. Subsequent boots are ~15 s on HVF.
+
+**Q: Why split-flash firmware (`edk2-aarch64-code.fd` + `varstore.fd`) instead of `-bios QEMU_EFI.fd`?**
+Homebrew's QEMU formula stopped shipping `QEMU_EFI.fd` and moved to the split EDK2 layout: `edk2-aarch64-code.fd` (read-only code, 64 MB) plus `edk2-arm-vars.fd` (varstore template). On QEMU 9.x + HVF + Apple Silicon, the legacy `-bios` path silently produces zero serial output — UEFI never makes it out of its stub. The launcher uses `-drive if=pflash,unit=0,readonly=on` for code and `-drive if=pflash,unit=1` for a per-VM writable varstore copy. The setup script stages both files into `~/arm_qemu_labs/firmware/`.
+
+If you have a stale `~/arm_qemu_labs/firmware/QEMU_EFI.fd` from an older setup run, the current `setup_qemu_labs.sh` deletes it automatically — it was almost certainly `efi-virtio.rom` (160 KB network boot ROM) misdetected by the old firmware-search fallback, not a real 64 MB UEFI image.
+
+**Q: Why does the launcher add `-netdev user,id=net0` by default?**
+The cloud-init `packages:` block in `seed.iso` installs `pciutils`, `device-tree-compiler`, `acpica-tools` via `apt-get` on first boot. Without networking, `apt-get update` hangs forever waiting for DNS that doesn't exist, and cloud-init never finishes — the guest boots but `ubuntu login:` appears late enough to blow the 180 s wait. User-mode virtio-net gives cloud-init a working `10.0.2.0/24` on the slirp stack with zero host config. Pass `network=False` to `QEMULauncher` for labs that need to study a network-less boot.
 
 **Q: Why `-cpu cortex-a76` and what happens under HVF?**
 Cortex-A76 is the closest QEMU-emulatable microarchitectural ancestor of Neoverse N1 (same ARMv8.2-A feature set, same pipeline family) — QEMU doesn't expose `neoverse-n1` as a `-cpu` model, so A76 is the stand-in for Neoverse fidelity under TCG.

@@ -130,41 +130,54 @@ create_dirs() {
     fi
 }
 
-# ── QEMU UEFI firmware ────────────────────────────────────────────────────────
+# ── QEMU UEFI firmware (split-flash layout) ───────────────────────────────────
+# Homebrew QEMU ships the modern split EDK2 layout:
+#   edk2-aarch64-code.fd  — readonly firmware code (64 MB)
+#   edk2-arm-vars.fd       — varstore template (used writable, per-VM copy)
+# The old monolithic QEMU_EFI.fd + -bios path was silently broken on
+# QEMU 9.x + HVF (zero serial output), so this script stages both flash
+# volumes and the launcher uses -drive if=pflash.
 setup_firmware() {
-    local fw_dest="${FIRMWARE_DIR}/QEMU_EFI.fd"
+    local code_src="$(brew --prefix)/share/qemu/edk2-aarch64-code.fd"
+    local vars_src="$(brew --prefix)/share/qemu/edk2-arm-vars.fd"
+    local code_dest="${FIRMWARE_DIR}/edk2-aarch64-code.fd"
+    local vars_dest="${FIRMWARE_DIR}/varstore.fd"
 
-    if [[ -f "${fw_dest}" ]]; then
-        info "  ✓ Firmware already at ${fw_dest}"
-        return
+    # Remove stale QEMU_EFI.fd from earlier broken setup runs (it was
+    # efi-virtio.rom mislabeled — 160 KB instead of the real 64 MB firmware).
+    if [[ -f "${FIRMWARE_DIR}/QEMU_EFI.fd" ]]; then
+        warn "  Removing stale QEMU_EFI.fd (previous setup picked up the wrong file)"
+        rm -f "${FIRMWARE_DIR}/QEMU_EFI.fd"
     fi
 
-    info "Locating QEMU_EFI.fd …"
-
-    # Try Homebrew QEMU share directory
-    local brew_fw
-    brew_fw=$(find "$(brew --prefix)/share" -name "QEMU_EFI.fd" 2>/dev/null | head -1)
-
-    if [[ -n "${brew_fw}" ]]; then
-        cp "${brew_fw}" "${fw_dest}"
-        info "  ✓ Copied from ${brew_fw}"
+    # Code (readonly)
+    if [[ -f "${code_dest}" ]]; then
+        info "  ✓ edk2-aarch64-code.fd already present"
+    elif [[ -f "${code_src}" ]]; then
+        cp "${code_src}" "${code_dest}"
+        info "  ✓ Staged edk2-aarch64-code.fd"
     else
-        warn "QEMU_EFI.fd not found in Homebrew share. Trying edk2 package …"
-        brew_fw=$(find "$(brew --prefix)" -name "efi-virtio.rom" -o \
-                                          -name "QEMU_EFI.fd" 2>/dev/null | head -1)
-        if [[ -n "${brew_fw}" ]]; then
-            cp "${brew_fw}" "${fw_dest}"
-            info "  ✓ Copied from ${brew_fw}"
-        else
-            warn "Could not locate QEMU_EFI.fd automatically."
-            echo ""
-            echo "  Manual steps:"
-            echo "  1. Install qemu-efi-aarch64: brew install qemu"
-            echo "     (the QEMU_EFI.fd is in $(brew --prefix)/share/qemu/)"
-            echo "  2. Copy it: cp $(brew --prefix)/share/qemu/QEMU_EFI.fd ${fw_dest}"
-            echo ""
-        fi
+        error "edk2-aarch64-code.fd not found at ${code_src}. Install qemu: brew install qemu"
     fi
+
+    # Varstore (per-VM writable copy, initialised from the Homebrew template)
+    if [[ -f "${vars_dest}" ]]; then
+        info "  ✓ varstore.fd already present"
+    elif [[ -f "${vars_src}" ]]; then
+        cp "${vars_src}" "${vars_dest}"
+        chmod u+w "${vars_dest}"
+        info "  ✓ Staged varstore.fd from edk2-arm-vars.fd template"
+    else
+        error "edk2-arm-vars.fd not found at ${vars_src}. Install qemu: brew install qemu"
+    fi
+
+    # Size sanity: the real flash volumes are 64 MB. Anything under 1 MB is
+    # the historical efi-virtio.rom mislabel (160 KB) or a truncated copy.
+    local code_sz vars_sz
+    code_sz=$(stat -f%z "${code_dest}" 2>/dev/null || stat -c%s "${code_dest}")
+    vars_sz=$(stat -f%z "${vars_dest}" 2>/dev/null || stat -c%s "${vars_dest}")
+    (( code_sz >= 1000000 )) || error "firmware code is only ${code_sz} bytes (expected ~64MB). Source may be corrupt."
+    (( vars_sz >= 1000000 )) || error "varstore is only ${vars_sz} bytes (expected ~64MB). Source may be corrupt."
 }
 
 # ── Ubuntu cloud image ────────────────────────────────────────────────────────
@@ -291,11 +304,11 @@ smoke_test() {
         warn "  HVF not listed — labs will run with TCG (significantly slower)"
     fi
 
-    # Firmware
-    if [[ -f "${FIRMWARE_DIR}/QEMU_EFI.fd" ]]; then
-        info "  ✓ QEMU_EFI.fd present"
+    # Firmware (split-flash pair)
+    if [[ -f "${FIRMWARE_DIR}/edk2-aarch64-code.fd" && -f "${FIRMWARE_DIR}/varstore.fd" ]]; then
+        info "  ✓ firmware pair present (edk2-aarch64-code.fd + varstore.fd)"
     else
-        warn "  QEMU_EFI.fd not found — place it at ${FIRMWARE_DIR}/QEMU_EFI.fd"
+        warn "  firmware pair incomplete — re-run this script"
     fi
 
     # Disk image

@@ -245,6 +245,73 @@ def test_launcher_instantiation():
     assert isinstance(l.serial_port, int)
     assert l.qmp_port != l.serial_port
     assert not l.is_running()
+    # Network on by default (cloud-init needs apt)
+    assert l.network is True
+    # Split-flash firmware fields exist and default None
+    assert l.firmware_code is None
+    assert l.firmware_vars is None
+
+
+def _make_dummy_file(tmpdir, name, size_bytes):
+    import os
+    path = os.path.join(tmpdir, name)
+    with open(path, "wb") as f:
+        f.truncate(size_bytes)
+    return path
+
+
+def test_launcher_build_cmd_pflash_and_net():
+    """Verify _build_cmd emits pflash pair + virtio-net when configured."""
+    import tempfile
+    from qemu_launcher import QEMULauncher
+    with tempfile.TemporaryDirectory() as tmp:
+        code = _make_dummy_file(tmp, "code.fd", 2_000_000)
+        vars_ = _make_dummy_file(tmp, "vars.fd", 2_000_000)
+        disk = _make_dummy_file(tmp, "disk.qcow2", 1024)
+        seed = _make_dummy_file(tmp, "seed.iso", 1024)
+        l = QEMULauncher(
+            firmware_code=code, firmware_vars=vars_,
+            disk_image=disk, seed_iso=seed,
+        )
+        cmd = " ".join(l._build_cmd())
+        assert f"if=pflash,format=raw,unit=0,file={code},readonly=on" in cmd
+        assert f"if=pflash,format=raw,unit=1,file={vars_}" in cmd
+        assert "-netdev user,id=net0" in cmd
+        assert "virtio-net-device,netdev=net0" in cmd
+        assert "-bios" not in cmd
+
+
+def test_launcher_network_disabled():
+    """network=False should drop the -netdev args entirely."""
+    from qemu_launcher import QEMULauncher
+    # No paths needed — network flag is independent of firmware/disk
+    l = QEMULauncher(network=False)
+    cmd = " ".join(l._build_cmd())
+    assert "-netdev" not in cmd
+    assert "virtio-net-device" not in cmd
+
+
+def test_launcher_rejects_tiny_firmware():
+    """A 160 KB file (the efi-virtio.rom mislabel) must be rejected."""
+    import tempfile, pytest
+    from qemu_launcher import QEMULauncher
+    with tempfile.TemporaryDirectory() as tmp:
+        tiny = _make_dummy_file(tmp, "fake_firmware.fd", 160_768)
+        try:
+            QEMULauncher(firmware_code=tiny)
+            assert False, "expected ValueError on 160 KB firmware"
+        except ValueError as exc:
+            assert "160768" in str(exc) or "1000000" in str(exc)
+
+
+def test_launcher_rejects_missing_file():
+    """Non-existent firmware path must raise FileNotFoundError, not silently pass."""
+    from qemu_launcher import QEMULauncher
+    try:
+        QEMULauncher(firmware_code="/does/not/exist.fd")
+        assert False, "expected FileNotFoundError"
+    except FileNotFoundError:
+        pass
 
 
 def test_launcher_ports_differ():
@@ -537,6 +604,10 @@ TESTS = [
     ("qemu_launcher: ports are unique (x10)",   test_find_free_port_unique),
     ("qemu_launcher: detect_accel returns str", test_detect_accel_returns_string),
     ("qemu_launcher: instantiation",            test_launcher_instantiation),
+    ("qemu_launcher: build_cmd pflash+net",     test_launcher_build_cmd_pflash_and_net),
+    ("qemu_launcher: network=False drops net",  test_launcher_network_disabled),
+    ("qemu_launcher: rejects tiny firmware",    test_launcher_rejects_tiny_firmware),
+    ("qemu_launcher: rejects missing file",     test_launcher_rejects_missing_file),
     ("qemu_launcher: ports differ",             test_launcher_ports_differ),
     ("qemu_launcher: terminate noop",           test_launcher_terminate_noop),
     ("qemu_launcher: wait_ready no QEMU",       test_launcher_wait_ready_no_qemu),

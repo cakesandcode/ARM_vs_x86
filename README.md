@@ -1,28 +1,37 @@
 # ARM / QEMU Platform Architecture Lab Series
 
-A 13-chapter hands-on lab series covering the full Arm platform stack on QEMU — from exception levels through interrupt controllers, power management, ACPI, PCIe, and Neoverse SVE extensions.
+A hands-on lab series covering the full Arm platform stack on QEMU — from exception levels through interrupt controllers, power management, ACPI, PCIe, and Neoverse SVE extensions. Planned as 13 chapters; Chapter 1 is shipped end-to-end today, the rest are in development and will release as each completes the same verification bar.
 
 Each chapter is a Jupyter notebook that launches a QEMU aarch64 VM, interacts with it via QMP (QEMU Machine Protocol) and serial console, and validates behavior through assertions. All labs run on macOS Apple Silicon (HVF acceleration) or Linux (KVM).
 
 **Author:** Aruna Kumar — Senior SoC Firmware Architect, ex-Intel Sr. Director
 
-## The 13 Chapters
+## Chapters
+
+### Shipped (verified end-to-end)
 
 | # | Topic | What You Learn |
 |---|-------|----------------|
 | 01 | ARM Architecture Overview | ISA fundamentals, register model, instruction encoding |
-| 02 | Memory Model | Hierarchy, coherency, memory ordering |
-| 03 | Exception Levels | EL0-EL3 privilege levels, secure vs non-secure world |
-| 04 | GIC Interrupt Controller | Generic Interrupt Controller, IRQ routing, priorities |
-| 05 | PSCI | Power State Coordination Interface, CPU on/off/suspend |
-| 06 | SCMI | System Control & Management Interface, clock/power domains |
-| 07 | ACPI on ARM | MADT, GTDT, IORT tables — how ARM platforms describe hardware |
-| 08 | Device Tree | DT parsing, boot-time hardware description, FDT overlays |
-| 09 | SMMUv3 | System Memory Management Unit, IOMMU, DMA isolation |
-| 10 | VirtIO | Device emulation, hot-plug, virtio-net/blk/rng on ARM |
-| 11 | PCIe on ARM | PCIe MSI-X interrupts, BAR configuration, ECAM |
-| 12 | Linux Boot Path | Kernel boot sequence, initramfs, device probing |
-| 13 | Neoverse Specifics | SVE/SVE2, Neoverse V3/N3 features, performance counters |
+
+### Planned (not yet in this repo)
+
+| # | Topic |
+|---|-------|
+| 02 | Memory Model — hierarchy, coherency, memory ordering, hot-plug |
+| 03 | Exception Levels — EL0-EL3 privilege, secure vs non-secure |
+| 04 | GIC Interrupt Controller — GICv3, IRQ routing, MSI-X |
+| 05 | PSCI — Power State Coordination, CPU on/off/suspend |
+| 06 | SCMI — System Control & Management Interface |
+| 07 | ACPI on ARM — MADT, GTDT, IORT tables |
+| 08 | Device Tree — DT parsing, boot-time hardware description |
+| 09 | SMMUv3 — System Memory Management Unit, DMA isolation |
+| 10 | VirtIO — Device emulation, hot-plug |
+| 11 | PCIe on ARM — MSI-X, BAR configuration, ECAM |
+| 12 | Linux Boot Path — Kernel sequence, initramfs |
+| 13 | Neoverse Specifics — SVE/SVE2, performance counters |
+
+Each planned chapter ships when it passes the same Tier-3 integration test as Chapter 1 — an end-to-end VM boot that asserts on the chapter's load-bearing behaviour.
 
 ## Shared Infrastructure
 
@@ -42,7 +51,7 @@ Four tiers, increasing cost, decreasing frequency.
 |---|---|---|---|---|
 | 1 — Unit + mocks | `test_shared_modules.py` | ~5 s | Python logic: ports, JSON parsing, CPU coercion, pflash/netdev arg building | None (always runs) |
 | 2 — Component integration | *(planned)* | ~30 s | Real `qemu-system-aarch64` spawn, QMP handshake, serial relay | `qemu-system-aarch64` in PATH |
-| 3 — End-to-end boot | `test_boot_integration.py` | ~90 s | Full VM boot, cloud-init, login prompt over serial, clean teardown | `~/arm_qemu_labs/{firmware,images}` staged |
+| 3 — End-to-end boot | `test_boot_integration.py` | ~13 s on Apple Silicon HVF | Full VM boot, cloud-init, login prompt over serial, clean teardown | `~/arm_qemu_labs/{firmware,images}` staged |
 | 4 — Notebook execution | *(planned)* | ~3 min/chapter | Full notebook run via `nbclient`; assertion cells gate regressions | Chapter-specific |
 
 ### Running tests
@@ -50,10 +59,10 @@ Four tiers, increasing cost, decreasing frequency.
 ```bash
 # Tier 1 — unit tests
 source ~/arm_qemu_labs/.venv/bin/activate
-python arm_qemu_labs/test_shared_modules.py             # expect 39/39 PASS
+python arm_qemu_labs/test_shared_modules.py             # expect 41/41 PASS
 
 # Tier 3 — full VM boot (skips if firmware/images aren't staged)
-python arm_qemu_labs/test_boot_integration.py           # ~90 s, expects "PASS"
+python arm_qemu_labs/test_boot_integration.py           # ~13 s on Apple Silicon HVF
 
 # Bonus: raw shell boot smoke test (bypasses launcher)
 bash arm_qemu_labs/test_boot_pflash.sh                  # interactive, Ctrl+A X to exit
@@ -61,9 +70,9 @@ bash arm_qemu_labs/test_boot_pflash.sh                  # interactive, Ctrl+A X 
 
 ### Tier 1 coverage today
 
-39 tests across 4 modules + 1 cross-module check:
+41 tests across 4 modules + 1 cross-module check:
 - `assert_lib`: 15 tests (assertion methods, summary, reset, exception containment)
-- `qemu_launcher`: 10 tests (port allocation, accelerator detection, HVF coercion, pflash+netdev command building, lifecycle)
+- `qemu_launcher`: 12 tests (port allocation, accelerator detection, HVF coercion, pflash+netdev command building, firmware path + size validation, lifecycle)
 - `qmp_client`: 7 tests (connect, JSON I/O, error handling, fragmented data)
 - `serial_console`: 6 tests (instantiation, connect, grep output)
 - `cross-module`: 1 test (port collision detection)
@@ -83,7 +92,7 @@ bash arm_qemu_labs/setup_qemu_labs.sh
 # Every session: activate the venv
 source ~/arm_qemu_labs/.venv/bin/activate
 
-# Verify shared modules (37 tests)
+# Verify shared modules (41 tests)
 cd arm_qemu_labs && python test_shared_modules.py
 
 # Open labs — pick the "ARM QEMU Labs (venv)" kernel inside Jupyter

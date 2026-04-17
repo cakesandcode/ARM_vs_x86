@@ -231,7 +231,14 @@ def test_detect_accel_returns_string():
 def test_launcher_instantiation():
     from qemu_launcher import QEMULauncher
     l = QEMULauncher(cpu="cortex-a76", ram="2G", smp=1)
-    assert l.cpu == "cortex-a76"
+    # Requested CPU is always preserved; effective CPU depends on accelerator.
+    # HVF on Apple Silicon rejects anything other than host/max/a53/a57 on the
+    # virt machine, so the launcher coerces to 'host'. TCG/KVM pass through.
+    assert l.requested_cpu == "cortex-a76"
+    if l.accel == "hvf":
+        assert l.cpu == "host", f"HVF should coerce to 'host', got {l.cpu!r}"
+    else:
+        assert l.cpu == "cortex-a76"
     assert l.ram == "2G"
     assert l.smp == 1
     assert isinstance(l.qmp_port, int)

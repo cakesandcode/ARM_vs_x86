@@ -111,6 +111,18 @@ pip freeze | grep <package> >> requirements.txt
 **Q: First boot takes ~2 minutes — is that normal?**
 Yes. First boot runs cloud-init, which installs `pciutils`, `xxd`, `device-tree-compiler`, and `acpica-tools` into the guest. Subsequent boots are ~15 s on HVF.
 
+**Q: Why `-cpu cortex-a76` and what happens under HVF?**
+Cortex-A76 is the closest QEMU-emulatable microarchitectural ancestor of Neoverse N1 (same ARMv8.2-A feature set, same pipeline family) — QEMU doesn't expose `neoverse-n1` as a `-cpu` model, so A76 is the stand-in for Neoverse fidelity under TCG.
+
+Under **HVF on Apple Silicon**, this doesn't work: HVF is pass-through virtualization, so the `virt` machine only accepts `host`, `max`, `cortex-a53`, or `cortex-a57`. Passing `cortex-a76` raises `Invalid CPU model`. The launcher handles this transparently — when it detects HVF, it coerces the requested CPU to `host` and logs the swap:
+
+```
+[qemu_launcher] HVF cannot emulate -cpu 'cortex-a76' on the virt machine;
+                coercing to 'host' (Apple Silicon pass-through)
+```
+
+Under TCG or KVM (Linux), the requested model is passed through unchanged. This means a single notebook works on both: Apple Silicon devs see their real M-series core via HVF; Linux/CI runs get a Neoverse-N1-adjacent TCG emulation. Consequence on HVF: `CPU implementer` in `/proc/cpuinfo` is `0x61` (Apple), not `0x41` (Arm Ltd) — an honest reflection of where the code is actually running.
+
 **Q: I get `zsh: command not found: jupyter` — what went wrong?**
 The venv isn't activated in this shell. If you removed Homebrew's global `jupyterlab` (recommended in the cleanup section below), there is no global `jupyter` to fall back on — you must activate the venv first:
 ```bash

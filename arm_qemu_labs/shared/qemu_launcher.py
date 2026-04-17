@@ -93,7 +93,6 @@ class QEMULauncher:
         log_file    : Path for QEMU stdout/stderr log; auto-generated if None
         """
         self.machine = machine
-        self.cpu = cpu
         self.ram = ram
         self.smp = smp
         self.firmware = firmware
@@ -110,6 +109,21 @@ class QEMULauncher:
         self.qmp_port = _find_free_port()
         self.serial_port = _find_free_port()
         self.accel = detect_accel()
+
+        # HVF on Apple Silicon is pass-through virtualization: the `virt`
+        # machine only accepts host/max/cortex-a53/cortex-a57. Anything else
+        # (e.g. cortex-a76, neoverse-n1) causes QEMU to exit with
+        # "Invalid CPU model". Coerce to 'host' and record the original
+        # request so notebooks can keep a semantically meaningful default
+        # while still booting on HVF without per-chapter edits.
+        self.requested_cpu = cpu
+        _HVF_VIRT_OK = {"host", "max", "cortex-a53", "cortex-a57"}
+        if self.accel == "hvf" and cpu not in _HVF_VIRT_OK:
+            print(f"[qemu_launcher] HVF cannot emulate -cpu {cpu!r} on the "
+                  f"virt machine; coercing to 'host' (Apple Silicon pass-through)")
+            self.cpu = "host"
+        else:
+            self.cpu = cpu
 
         self._proc = None
         self._log_fh = None

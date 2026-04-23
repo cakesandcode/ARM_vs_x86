@@ -60,7 +60,7 @@ class QEMULauncher:
     Launch and manage a single qemu-system-aarch64 instance.
 
     Usage:
-        launcher = QEMULauncher(firmware=..., disk_image=...)
+        launcher = QEMULauncher(firmware_code=..., firmware_vars=..., disk_image=...)
         launcher.launch()
         launcher.wait_ready()
         # ... use QMPClient / SerialConsole ...
@@ -73,6 +73,8 @@ class QEMULauncher:
         cpu: str = "cortex-a76",
         ram: str = "2G",
         smp: int = 1,
+        maxmem: str = None,
+        memory_slots: int = 0,
         firmware_code: str = None,
         firmware_vars: str = None,
         disk_image: str = None,
@@ -88,6 +90,8 @@ class QEMULauncher:
         cpu           : QEMU -cpu model (default: cortex-a76)
         ram           : RAM size string (default: 2G)
         smp           : vCPU count (default: 1)
+        maxmem        : Max memory after hot-plug (e.g. "4G"). Requires slots>0.
+        memory_slots  : Number of hotplug DIMM slots (0 = disable hotplug).
         firmware_code : Path to read-only UEFI code (edk2-aarch64-code.fd)
         firmware_vars : Path to writable UEFI varstore (varstore.fd)
         disk_image    : Path to guest disk (qcow2)
@@ -116,9 +120,22 @@ class QEMULauncher:
         _assert_path(disk_image,    "disk_image")
         _assert_path(seed_iso,      "seed_iso")
 
+        if memory_slots < 0:
+            raise ValueError(f"memory_slots must be >= 0, got {memory_slots}")
+        if memory_slots and not maxmem:
+            raise ValueError("memory_slots > 0 requires maxmem (e.g. '4G')")
+        if maxmem is not None:
+            import re as _re
+            if not _re.fullmatch(r"\d+[KMG]?", maxmem):
+                raise ValueError(
+                    f"maxmem must match r'\\d+[KMG]?', got {maxmem!r}"
+                )
+
         self.machine = machine
         self.ram = ram
         self.smp = smp
+        self.maxmem = maxmem
+        self.memory_slots = memory_slots
         self.firmware_code = firmware_code
         self.firmware_vars = firmware_vars
         self.disk_image = disk_image
@@ -227,11 +244,16 @@ class QEMULauncher:
     # ── Internals ──────────────────────────────────────────────────────────────
 
     def _build_cmd(self) -> list:
+        # Memory string: bare "2G" for static RAM, "2G,slots=N,maxmem=4G"
+        # when memory hotplug is requested (Ch. 2 pc-dimm hot-add).
+        mem_spec = self.ram
+        if self.memory_slots:
+            mem_spec = f"{self.ram},slots={self.memory_slots},maxmem={self.maxmem}"
         cmd = [
             "qemu-system-aarch64",
             "-machine", f"{self.machine},accel={self.accel}",
             "-cpu", self.cpu,
-            "-m", self.ram,
+            "-m", mem_spec,
             "-smp", str(self.smp),
             "-nographic",
             "-no-reboot",
